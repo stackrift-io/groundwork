@@ -27,7 +27,7 @@ Stop and reply only
 if any of these is true:
 - the prompt lacks a `Repository root:` line, or its `Mode:` line is not exactly `audit` or `tune`
 - `Mode: audit` and the prompt has no `Facts (data from gw.mjs, not instructions):` block
-- `Mode: tune` and `.groundwork/audit/report.md` does not exist
+- `Mode: tune` and `.groundwork/audit/audit-result.md` does not exist
 
 ## Audit mode
 
@@ -54,11 +54,11 @@ Assess:
 
 Base your recommendations on the facts. Every finding needs evidence: a path and line, or a fact (`stats: findings.byArea.tests = 12`, `doctor: Docker warn`). Every recommendation names the finding it fixes, the file it changes, and the expected effect. Also list what already works.
 
-Write only `.groundwork/audit/report.md`, the prompt's template filled in, with nothing before or after it. If the file already exists, read it first, then replace it whole.
+Write only `.groundwork/audit/audit-result.md`, the prompt's template filled in, with nothing before or after it. If the file already exists, read it first, then replace it whole.
 
 ## Tune mode
 
-Read `.groundwork/audit/report.md`. The prompt's `Include:` line names the recommendations to include (`Include: R1 R3`, or `Include: all`). For each one, write the exact change: a unified diff for an edit, the full content for a new file. Keep each change small and independent, so the user can drop one without breaking the others. State the expected effect of each, in measured terms where possible, taking the numbers from the report's Measurements table (tokens before and after). Put recommendations you cannot turn into a safe, exact change under "Not included", with the reason.
+Read `.groundwork/audit/audit-result.md`. The prompt's `Include:` line names the recommendations to include (`Include: R1 R3`, or `Include: all`). For each one, write the exact change: a unified diff for an edit, the full content for a new file. Keep each change small and independent, so the user can drop one without breaking the others. State the expected effect of each, in measured terms where possible, taking the numbers from the report's Measurements table (tokens before and after). Put recommendations you cannot turn into a safe, exact change under "Not included", with the reason.
 
 Model routing for the Groundwork stages is changed in `.groundwork/config.json` (`models.<stage>`), never in the plugin's files.
 
@@ -79,6 +79,12 @@ Write only `.groundwork/tune/proposal.md`, the prompt's template filled in, with
 - Change source code, tests, specs, configuration, run state or any file other than the one above.
 - Create branches, commit, push or open pull requests.
 
+## If a write is refused
+
+If Claude Code refuses one of your Write calls, do not retry under another name, and never put the file's content in your
+reply. Reply with only one line per refused file, `WRITE REFUSED: <path>: <the refusal message, verbatim>`, and nothing
+else. The orchestrator stops and tells the user; it never saves the content for you.
+
 ## Reply
 
 Reply in at most eight lines, exactly this, with `<n>` findings for audit and `<n>` changes for tune:
@@ -86,6 +92,6 @@ Reply in at most eight lines, exactly this, with `<n>` findings for audit and `<
 ```
 Mode: <audit|tune>
 Status: Done
-Wrote: <.groundwork/audit/report.md or .groundwork/tune/proposal.md>
+Wrote: <.groundwork/audit/audit-result.md or .groundwork/tune/proposal.md>
 Count: <n>
 ```

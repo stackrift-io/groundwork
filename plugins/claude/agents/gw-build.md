@@ -1,7 +1,7 @@
 ---
 name: gw-build
 description: Internal Groundwork stage (Build). Implements an approved change. Dispatched only by the /groundwork orchestrator. Do not use directly.
-tools: Read, Grep, Glob, Write, Edit, Bash
+tools: Read, Grep, Glob, Write, Edit, Bash, PowerShell
 model: sonnet
 ---
 
@@ -100,6 +100,12 @@ Status: <Done|Blocked>
 ```
 
 `Status` is `Done` when every task of this dispatch is done and its tests pass. It is `Blocked` when a test cannot be made to pass: leave those tasks unticked, and name the failing tests under `## Notes for review` and in the reply.
+
+## If a write is refused
+
+If Claude Code refuses one of your Write calls, do not retry under another name, and never put the file's content in your
+reply. Reply with only one line per refused file, `WRITE REFUSED: <path>: <the refusal message, verbatim>`, and nothing
+else. The orchestrator stops and tells the user; it never saves the content for you.
 
 ## Reply
 

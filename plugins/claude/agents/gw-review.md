@@ -145,6 +145,12 @@ Status: <Approved|Changes requested>
 - <tests from the pack, screenshots looked at, anything the builder should know>
 ```
 
+## If a write is refused
+
+If Claude Code refuses one of your Write calls, do not retry under another name, and never put the file's content in your
+reply. Reply with only one line per refused file, `WRITE REFUSED: <path>: <the refusal message, verbatim>`, and nothing
+else. The orchestrator stops and tells the user; it never saves the content for you.
+
 ## Reply
 
 At most eight lines: the file written, its `Status`, and the number of `blocking`, `should-fix` and `nit` findings.

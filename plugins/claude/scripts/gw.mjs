@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 
-const GW_VERSION = "0.2.2";
+const GW_VERSION = "0.2.3";
 
 const STAGES = ["explore", "plan", "build", "review", "deliver"];
 const CURRENT_VALUES_V1 = [
@@ -383,7 +383,7 @@ function renderPlanSummary(change) {
   const base = path.join(CHANGES_DIR, change);
   const task = read(path.join(base, "task.md")) || "";
   const source = ((/^Source:[ \t]*(.*)$/m.exec(task.slice(0, 2000)) || [])[1] || "").trim() || "unknown";
-  const summary = read(path.join(base, "summary.md")) || "";
+  const summary = read(planBriefPath(base)) || "";
   const section = (h) => markdownSection(summary, h);
   const acs = taskAcs(change);
   const fast = run.path === "fast";
@@ -396,7 +396,7 @@ function renderPlanSummary(change) {
   const counts = Object.fromEntries(PLAN_LEVELS.map((l) => [l, 0]));
   if (fast) for (const t of tests) { if (t.level) counts[t.level]++; }
   else for (const r of reqs) for (const s of r.scenarios) { const l = (s.level || "").toLowerCase(); if (l in counts) counts[l]++; }
-  const files = [rel(path.join(base, "task.md")), rel(path.join(base, "summary.md"))];
+  const files = [rel(path.join(base, "task.md")), rel(planBriefPath(base))];
   if (fast) files.push(rel(path.join(base, "plan.md")));
   else if (dir) {
     for (const f of ["proposal.md", "design.md", "tasks.md"]) if (exists(path.join(dir, f))) files.push(rel(path.join(dir, f)));
@@ -469,7 +469,7 @@ function cmdPlanSummary(usage, gate) {
   const fail = (msg) => { print({ error: msg }, msg); process.exitCode = 1; };
   if (!parseRun(change)) return fail(`No change named "${change}". Run /groundwork list.`);
   if (gate === "deliver") return cmdDeliverySummary(change, fail);
-  if (!exists(path.join(CHANGES_DIR, change, "summary.md"))) return fail(`no summary.md for change "${change}"`);
+  if (!exists(planBriefPath(path.join(CHANGES_DIR, change)))) return fail(`no ${PLAN_BRIEF} for change "${change}"`);
   const relPath = path.posix.join(".groundwork", "changes", change, "plan-summary.html");
   const abs = path.join(CHANGES_DIR, change, "plan-summary.html");
   fs.writeFileSync(abs, renderPlanSummary(change));
@@ -552,7 +552,7 @@ function renderDeliverySummary(change) {
   // Format 2: the approving round deliver-input uses; format 1: review.md.
   const reviewText = run.format >= 2 ? read(path.join(base, `review-${reviewRound(change)}.md`)) || "" : read(path.join(base, "review.md")) || "";
   const acRows = (roundTables(reviewText).acs || []).map((c) => ({ ac: c[0] || "", verdict: c[1] || "", evidence: c[2] || "" }));
-  const summary = read(path.join(base, "summary.md")) || "";
+  const summary = read(planBriefPath(base)) || "";
   const link = (() => { try { return trackerLink(run, cfg); } catch { return { type: "none", key: null }; } })();
   let files = [];
   try { files = changedFiles().files; } catch (err) { problems.push(`changed files unavailable: ${err.message}`); }
@@ -634,7 +634,7 @@ Workflow
 
 Setup and quality
   init                                         Set up OpenSpec, config, AGENTS.md and the CI check
-  audit                                        Assess the agent setup; writes .groundwork/audit/report.md
+  audit                                        Assess the agent setup; writes .groundwork/audit/audit-result.md
   tune [R1 R2 ...]                             Propose fixes from the audit; writes .groundwork/tune/proposal.md
   approve tune                                 Apply the tune proposal
   verify [--change <name>] [--strict]          Deterministic checks (same as CI)
@@ -1573,7 +1573,7 @@ function planProblems(change) {
     const oq = proposal === null ? null : markdownSection(proposal, "Open Questions");
     openQuestions = (oq || "").split(/\r?\n/).map((l) => /^\s*[-*]\s+(.*\S)\s*$/.exec(l)).filter(Boolean).map((m) => m[1]).filter((t) => !/^none$/i.test(t));
   }
-  if (!exists(path.join(base, "summary.md"))) problems.push("summary.md is missing");
+  if (!exists(planBriefPath(base))) problems.push(`${PLAN_BRIEF} is missing`);
   return { problems, openQuestions, counts };
 }
 
@@ -1985,11 +1985,20 @@ const STAGE_SCOPE = {
   intake: ["<c>source.json", "<c>context/**"],
   fetch: ["<c>context/**"],
   explore: ["<c>explore.md"],
-  plan: ["openspec/changes/<change>/**", "<c>plan.md", "<c>summary.md"],
+  plan: ["openspec/changes/<change>/**", "<c>plan.md", "<c>gate-plan.md"],
   build: ["<c>build-*.md", "<c>evidence/**"],
   review: ["<c>review-*.md", "<c>security-review-*.md"],
   deliver: ["<c>deliver.md"],
 };
+
+// The plan's one-page brief. Claude Code refuses a subagent's Write of a .md file whose name starts with report, summary,
+// findings or analysis, so gw-plan writes gate-plan.md; a change planned before 0.2.3 keeps its summary.md, which is read
+// (and fingerprinted under its own name) while no gate-plan.md exists.
+const PLAN_BRIEF = "gate-plan.md", PLAN_BRIEF_V022 = "summary.md";
+function planBriefPath(base) {
+  const now = path.join(base, PLAN_BRIEF), old = path.join(base, PLAN_BRIEF_V022);
+  return !exists(now) && exists(old) ? old : now;
+}
 
 // Allowed paths per refinement stage. <r> is .groundwork/refinements/<key>/.
 const REFINEMENT_SCOPE = {
@@ -1997,9 +2006,12 @@ const REFINEMENT_SCOPE = {
   refine: ["<r>ticket.md"],
 };
 
+// The audit report: audit-result.md (a subagent cannot Write a report*.md, see tuneReport()); report.md before 0.2.3.
+const AUDIT_RESULT = ".groundwork/audit/audit-result.md", AUDIT_REPORT_V022 = ".groundwork/audit/report.md";
+
 // The one file each auditor stage may write. Its snapshots live at .groundwork/audit/snapshots/<stage>.json.
 const AUDIT_SCOPE = {
-  audit: ".groundwork/audit/report.md",
+  audit: AUDIT_RESULT,
   tune: ".groundwork/tune/proposal.md",
 };
 
@@ -2434,7 +2446,7 @@ function cmdDoctor() {
     const expected = {
       "gw-explore": { tools: ["Read", "Grep", "Glob", "Write", "mcp__graphify__*"] },
       "gw-plan": { tools: ["Read", "Grep", "Glob", "Write", "Edit"] },
-      "gw-build": { tools: ["Read", "Grep", "Glob", "Write", "Edit", "Bash"] },
+      "gw-build": { tools: ["Read", "Grep", "Glob", "Write", "Edit", "Bash", "PowerShell"] },
       "gw-review": { tools: ["Read", "Grep", "Glob", "Write"] },
       "gw-deliver": { tools: ["Read", "Grep", "Glob", "Write"] },
       "gw-auditor": { tools: ["Read", "Grep", "Glob", "Write"] },
@@ -5093,12 +5105,16 @@ const TUNE_APPROVE = "`/groundwork approve tune`";
 const TUNE_CHANGED = "The proposal changed after it was shown. Next: `/groundwork tune`";
 const TUNE_PROPOSAL = ".groundwork/tune/proposal.md";
 const TUNE_STATE = ".groundwork/tune/state.md";
-const TUNE_REPORT = ".groundwork/audit/report.md";
+// The audit report tune works from. Claude Code refuses a subagent's Write of a .md file whose name starts with report, summary,
+// findings or analysis, so the auditor writes audit-result.md; a report.md from before 0.2.3 is used while no audit-result.md exists.
+function tuneReport() {
+  return !exists(path.join(ROOT, ...AUDIT_RESULT.split("/"))) && exists(path.join(ROOT, ...AUDIT_REPORT_V022.split("/"))) ? AUDIT_REPORT_V022 : AUDIT_RESULT;
+}
 const TUNE_MARKER = ".groundwork/tune/apply.json";
 const TUNE_BRANCH = /^groundwork\/tune-\d{4}-\d{2}-\d{2}(?:-[1-9]\d*)?$/;
 // Changed files tune-deliver neither stages nor refuses: audit snapshots, archive copies, tune-apply's marker, and the state of other
 // changes (R4).
-const TUNE_LEFT_UNSTAGED = [/^\.groundwork\/tune\/apply\.json$/, /^\.groundwork\/audit\/snapshots\//, /^\.groundwork\/audit\/report-[^/]*\.md$/, /^\.groundwork\/tune\/proposal-[^/]*\.md$/,
+const TUNE_LEFT_UNSTAGED = [/^\.groundwork\/tune\/apply\.json$/, /^\.groundwork\/audit\/snapshots\//, /^\.groundwork\/audit\/(?:report|audit-result)-[^/]*\.md$/, /^\.groundwork\/tune\/proposal-[^/]*\.md$/,
   /^\.groundwork\/changes\//, /^\.groundwork\/refinements\//, /^\.groundwork\/worktrees\//];
 
 // A path as one shell argument the user can paste: as it is when plain, otherwise in single quotes, which POSIX shells and
@@ -5117,7 +5133,7 @@ function tuneStrays(want) {
   const names = (args) => splitNul(gitAtMust(ROOT, args).out);
   const all = new Set([...names(["diff", "--name-only", "-z", "--no-renames", "HEAD"]), ...names(["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]),
     ...names(["ls-files", "--others", "--exclude-standard", "-z"])]);
-  const own = new Set([TUNE_PROPOSAL, TUNE_STATE, TUNE_REPORT]);
+  const own = new Set([TUNE_PROPOSAL, TUNE_STATE, AUDIT_RESULT, AUDIT_REPORT_V022]);
   // A path that a proposal path runs through (a directory turned into a link shows up this way
   // on POSIX) is the proposal's own concern: the apply skips or refuses linked paths itself.
   const underIt = (p) => { for (const w of want) if (w.startsWith(p + "/")) return true; return false; };
@@ -5139,7 +5155,7 @@ function tuneFingerprint() {
 // The hash state.md records for the audit report the proposal was shown with; "none" when there is no report.
 function tuneReportHash() {
   let buf;
-  try { buf = fs.readFileSync(path.join(ROOT, ...TUNE_REPORT.split("/"))); } catch { return "none"; }
+  try { buf = fs.readFileSync(path.join(ROOT, ...tuneReport().split("/"))); } catch { return "none"; }
   return fingerprintOf([{ name: "report.md", content: buf }]);
 }
 
@@ -5296,7 +5312,7 @@ function cmdTuneApply() {
   if (fp !== headerValue(state, "Shown")) return refuse(TUNE_CHANGED);
   const shownReport = headerValue(state, "Report");
   if (shownReport === null) return refuse("tune-apply: state.md has no Report line. Next: `/groundwork tune`");
-  if (shownReport !== tuneReportHash()) return refuse(`tune-apply: ${TUNE_REPORT} changed after the proposal was shown. Next: \`/groundwork tune\``);
+  if (shownReport !== tuneReportHash()) return refuse(`tune-apply: ${tuneReport()} changed after the proposal was shown. Next: \`/groundwork tune\``);
   const { problems, plans, date } = tuneProblems({ status: "either" });
   if (problems.length) return refuse(`tune-apply: check-tune found problems: ${problems.join("; ")}. Next: \`/groundwork tune\``, { problems });
   // The marker says an earlier run of this proposal may have written files, so uncommitted changes there can be its own, and it
@@ -5313,11 +5329,11 @@ function cmdTuneApply() {
       const base = cfg.deliver.baseBranch;
       const cur = gitAt(ROOT, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
       if (!cur.ok || cur.out.trim() !== base) {
-        const tracked = gitAt(ROOT, ["diff", "--name-only", "-z", "--no-renames", "HEAD", "--", ".groundwork/tune", TUNE_REPORT]);
+        const tracked = gitAt(ROOT, ["diff", "--name-only", "-z", "--no-renames", "HEAD", "--", ".groundwork/tune", tuneReport()]);
         const dirty = tracked.ok ? splitNul(tracked.out) : [];
         // A changed report blocks the switch only when the base branch holds another version of it.
-        const reportBlocks = dirty.includes(TUNE_REPORT) && !gitAt(ROOT, ["diff", "--quiet", "HEAD", `refs/heads/${base}`, "--", TUNE_REPORT]).ok;
-        const restore = [...(dirty.some((p) => p.startsWith(".groundwork/tune/")) ? [".groundwork/tune"] : []), ...(reportBlocks ? [TUNE_REPORT] : [])];
+        const reportBlocks = dirty.includes(tuneReport()) && !gitAt(ROOT, ["diff", "--quiet", "HEAD", `refs/heads/${base}`, "--", tuneReport()]).ok;
+        const restore = [...(dirty.some((p) => p.startsWith(".groundwork/tune/")) ? [".groundwork/tune"] : []), ...(reportBlocks ? [tuneReport()] : [])];
         return refuse(`tune-apply: switch to ${base} first; a tune starts from the base branch${restore.length ? `; run git restore ${restore.join(" ")} before the switch. Next: \`/groundwork tune\`` : ""}`);
       }
       // tune-deliver refuses anything outside the proposal, so it is refused here, before a file changes.
@@ -5427,7 +5443,7 @@ function tuneDeliverSteps(fail, out, tmp, setStep) {
   const shownReport = headerValue(state, "Report");
   const lockProblem = () => {
     if (tuneFingerprint() !== shownFingerprint) return `tune-deliver: ${TUNE_CHANGED}`;
-    if (tuneReportHash() !== shownReport) return `tune-deliver: ${TUNE_REPORT} changed after the proposal was shown. Next: \`/groundwork tune\``;
+    if (tuneReportHash() !== shownReport) return `tune-deliver: ${tuneReport()} changed after the proposal was shown. Next: \`/groundwork tune\``;
     return null;
   };
   const locked = lockProblem();
@@ -5459,7 +5475,7 @@ function tuneDeliverSteps(fail, out, tmp, setStep) {
   // 3. Nothing outside the applied proposal goes along, or waits in the way.
   setStep("stage");
   const appliedPaths = applied.flatMap((c) => (c.to ? [c.file, c.to] : [c.file]));
-  const want = new Set([TUNE_PROPOSAL, TUNE_STATE, TUNE_REPORT, ...appliedPaths]);
+  const want = new Set([TUNE_PROPOSAL, TUNE_STATE, AUDIT_RESULT, AUDIT_REPORT_V022, ...appliedPaths]);
   const outside = (list) => `tune-deliver: ${capList(list)} is not part of the applied proposal`;
   const notPart = (list) => `${outside(list)}. Next: ${stashAdvice(list)}, then \`/groundwork approve tune\``;
   const preStaged = splitNul(gitAtMust(ROOT, ["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).out).filter((p) => !want.has(p));

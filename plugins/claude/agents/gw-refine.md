@@ -69,6 +69,12 @@ Read `.groundwork/refinements/<key>/refinement.md` (the refinement key is on the
 - Write any file other than `ticket.md`.
 - Invent requirements the ticket, comments and answers do not support.
 
+## If a write is refused
+
+If Claude Code refuses one of your Write calls, do not retry under another name, and never put the file's content in your
+reply. Reply with only one line per refused file, `WRITE REFUSED: <path>: <the refusal message, verbatim>`, and nothing
+else. The orchestrator stops and tells the user; it never saves the content for you.
+
 ## Reply
 
 At most 6 lines, and nothing else:

@@ -1,7 +1,7 @@
 Report: tune
 Status: Awaiting approval
 Date: <YYYY-MM-DD>
-Based on: .groundwork/audit/report.md (<audit date>)
+Based on: .groundwork/audit/audit-result.md (<audit date>)
 
 ## Summary
 <two sentences: what changes and the expected effect>
