@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "kind": "ticket",
+  "key": "PROJ-123",
+  "tracker": "jira",
+  "url": "https://example.atlassian.net/browse/PROJ-123",
+  "fetched": "2026-10-18T09:00:00Z",
+  "summary": "",
+  "description": "",
+  "acceptanceCriteria": "",
+  "comments": [
+    { "author": "", "date": "2026-10-18T09:00:00Z", "body": "" }
+  ]
+}

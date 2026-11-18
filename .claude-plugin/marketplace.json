@@ -1,0 +1,22 @@
+{
+  "name": "stackrift",
+  "description": "Spec-driven agentic workflow plugins from Stackrift.",
+  "owner": {
+    "name": "Stackrift",
+    "url": "https://stackrift.io"
+  },
+  "plugins": [
+    {
+      "name": "groundwork",
+      "source": "./plugins/claude",
+      "description": "Spec-driven agentic workflow for software teams: refine, explore, plan (OpenSpec), build, review and deliver, with audit, tune and verify. One entry point: /groundwork.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Stackrift",
+        "url": "https://stackrift.io"
+      },
+      "homepage": "https://stackrift.io",
+      "license": "Apache-2.0"
+    }
+  ]
+}
