@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 
-const GW_VERSION = "0.2.0";
+const GW_VERSION = "0.2.1";
 
 const STAGES = ["explore", "plan", "build", "review", "deliver"];
 const CURRENT_VALUES_V1 = [
@@ -2370,7 +2370,7 @@ function cmdDoctor() {
   const git = run("git", ["rev-parse", "--is-inside-work-tree"], ROOT);
   add("Git repository", git.ok, git.ok ? ROOT : "not a git repository");
   const os = run("openspec", ["--version"], ROOT);
-  add("OpenSpec CLI installed", os.ok, os.ok ? os.out : "run: npm install -g @fission-ai/openspec@latest");
+  add("OpenSpec CLI installed", os.ok, os.ok ? os.out : "run: npm install -g @fission-ai/openspec@1.16.0");
   add("OpenSpec initialised (openspec/)", exists(path.join(ROOT, "openspec")), "run: /groundwork init");
   const cfg = loadConfig();
   add(".groundwork/config.json", !cfg._missing && !cfg._error, cfg._error || (cfg._missing ? "run: /groundwork init" : "ok"));

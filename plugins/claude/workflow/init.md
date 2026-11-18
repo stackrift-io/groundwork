@@ -14,7 +14,7 @@ Run `node "GW_HOME/scripts/gw.mjs" doctor --json` and read the result. Note:
 
 List only the steps below that are still needed, then ask the user to confirm with one question. Also ask which harnesses OpenSpec should set up: Claude Code only (default), or Claude Code and GitHub Copilot.
 
-1. **OpenSpec CLI**: if missing, install with `npm install -g @fission-ai/openspec@latest`.
+1. **OpenSpec CLI**: if missing, install with `npm install -g @fission-ai/openspec@1.16.0`.
 2. **OpenSpec in the repo**: if `openspec/` is missing, run `openspec init --tools claude` (or `--tools claude,github-copilot`).
 3. **Groundwork config**: create `.groundwork/config.json` from `GW_HOME/templates/config.json`, and the folder `.groundwork/changes/`.
 4. **Verify script for CI**: copy `GW_HOME/scripts/gw.mjs` to `.groundwork/bin/gw.mjs`.

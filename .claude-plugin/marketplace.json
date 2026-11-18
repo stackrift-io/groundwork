@@ -7,10 +7,10 @@
   },
   "plugins": [
     {
-      "name": "groundwork",
+      "name": "stackrift-groundwork",
       "source": "./plugins/claude",
       "description": "Spec-driven agentic workflow for software teams: refine, explore, plan (OpenSpec), build, review and deliver, with audit, tune and verify. One entry point: /groundwork.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "author": {
         "name": "Stackrift",
         "url": "https://stackrift.io"

@@ -15,13 +15,13 @@ Groundwork runs in Claude Code today. GitHub Copilot CLI, OpenCode and Codex are
 
 ```
 /plugin marketplace add stackrift-io/groundwork
-/plugin install groundwork@stackrift
+/plugin install stackrift-groundwork@stackrift
 ```
 
 Update later with `/plugin marketplace update stackrift`.
 
 Requirements: Node.js 20.19 or later, Git, and the OpenSpec CLI
-(`npm install -g @fission-ai/openspec@latest`; `/groundwork init` offers to install it).
+(`npm install -g @fission-ai/openspec@1.16.0`; `/groundwork init` offers to install it).
 For pull requests, `gh` (GitHub) or `az` (Azure Repos), signed in.
 
 ## Start
