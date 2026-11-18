@@ -44,7 +44,14 @@ through tools you configure and sign in to yourself:
 - Reference pages you pass with `--ref <url>`, fetched only from the domains you list
   in `context.trustedDomains` (empty by default).
 
-Everything it writes stays in your repository, under `.groundwork/` and `openspec/`.
+Everything it writes stays in your repository, under `.groundwork/` and `openspec/`. A
+change's record (the saved ticket, history and review rounds) is committed with the
+change when you approve the delivery, so it reaches your code host with the pull request.
+
+## Privacy
+
+See [Privacy](PRIVACY.md): what Groundwork stores, where data goes, and that Stackrift
+receives nothing.
 
 ## License
 

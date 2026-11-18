@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 
-const GW_VERSION = "0.2.1";
+const GW_VERSION = "0.2.2";
 
 const STAGES = ["explore", "plan", "build", "review", "deliver"];
 const CURRENT_VALUES_V1 = [

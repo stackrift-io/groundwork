@@ -2,7 +2,7 @@
   "name": "stackrift-groundwork",
   "displayName": "Groundwork by Stackrift",
   "description": "Spec-driven agentic workflow for software teams: explore, plan (OpenSpec), build, review and deliver, with audit, tune and verify. One entry point: /groundwork.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": {
     "name": "Stackrift",
     "email": "consulting@stackrift.io",
@@ -10,5 +10,6 @@
   },
   "homepage": "https://stackrift.io",
   "repository": "https://github.com/stackrift-io/groundwork",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "privacyPolicyUrl": "https://github.com/stackrift-io/groundwork/blob/main/plugins/claude/PRIVACY.md"
 }
