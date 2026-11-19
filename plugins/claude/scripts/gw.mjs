@@ -3,7 +3,7 @@
 // help | version | doctor | status | list | cost | stats | verify | context | config | classify | refinement | ready | answers | refine-comment | new-questions | summary
 // | diff | fingerprint | snapshot | check-scope | check-refined | check-context | check-plan | check-explore | check-gate | check-build
 // | groups | run-tests | review-input | check-review | deliver-input | check-deliver | deliver | pr-status | feedback | cleanup | check-tune | tune-apply | tune-deliver
-// | worktree | task | history | refs
+// | worktree | task | history | refs | opencode-agents | tokens
 // No dependencies. This script runs on Node.js 18+ (also in CI, from .groundwork/bin/gw.mjs); `doctor` asks for 20.19+ because
 // OpenSpec needs it.
 
@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { StringDecoder } from "node:string_decoder";
 import { homedir, tmpdir } from "node:os";
 
-const GW_VERSION = "0.2.3";
+const GW_VERSION = "0.3.0";
 
 const STAGES = ["explore", "plan", "build", "review", "deliver"];
 const CURRENT_VALUES_V1 = [
@@ -90,6 +90,9 @@ const REF_DIR = path.join(GW_DIR, "refinements");
 
 const exists = (p) => fs.existsSync(p);
 const read = (p) => (exists(p) ? fs.readFileSync(p, "utf8") : null);
+// For text gw.mjs parses (config, state, handoffs): one leading UTF-8 BOM is dropped, as PowerShell 5.1 and old editors write one.
+// Hashed or preserved content keeps read() or the bytes, so a BOM still counts there.
+const readText = (p) => { const t = read(p); return t !== null && t.charCodeAt(0) === 0xfeff ? t.slice(1) : t; };
 const rel = (p) => path.relative(ROOT, p).split(path.sep).join("/") || ".";
 const approxTokens = (text) => Math.ceil(text.length / 4);
 
@@ -141,13 +144,25 @@ function migrateConfig(user) {
 }
 
 function finishConfig(cfg) {
+  // models.opencode shows the effective model for every stage, defaults included.
+  if (isPlainObject(cfg.models)) {
+    const user = isPlainObject(cfg.models.opencode) ? cfg.models.opencode : {};
+    const eff = {};
+    for (const stage of Object.keys(cfg.models)) {
+      if (stage === "opencode") continue;
+      try { eff[stage] = opencodeModel(stage, cfg); } catch { /* reported by doctor */ }
+    }
+    if (cfg.models.opencode !== undefined && !isPlainObject(cfg.models.opencode)) Object.defineProperty(cfg, "_opencodeBad", { value: true, enumerable: false });
+    Object.defineProperty(cfg, "_opencodeSet", { value: Object.keys(user), enumerable: false }); // the stages the config itself maps
+    cfg.models.opencode = { ...eff, ...user };
+  }
   if (cfg.tracker && !cfg.tracker.keyPattern && DEFAULT_KEY_PATTERNS[cfg.tracker.type]) cfg.tracker.keyPattern = DEFAULT_KEY_PATTERNS[cfg.tracker.type];
   return cfg;
 }
 
 function loadConfig() {
   const defaults = configDefaults();
-  const raw = read(path.join(GW_DIR, "config.json"));
+  const raw = readText(path.join(GW_DIR, "config.json"));
   if (!raw) return { ...finishConfig(defaults), _missing: true };
   let user;
   try {
@@ -163,6 +178,43 @@ function loadConfig() {
     try { new RegExp(cfg.tracker.keyPattern); } catch (e) { cfg._error = `tracker.keyPattern is not a valid regular expression: ${e.message}`; }
   }
   return cfg;
+}
+
+// JSONC as JSON: drops // and /* */ comments and a comma before } or ], never inside a string. Anything else stays, so text that
+// is not JSONC still fails JSON.parse.
+function stripJsonc(text) {
+  let out = "", i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+    } else if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      if (end < 0) return text; // an unclosed comment: leave the text as it is, so it fails to parse
+      i = end + 2;
+    } else if (ch === ",") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] !== "}" && text[j] !== "]") out += ch;
+      i++;
+    } else { out += ch; i++; }
+  }
+  return out;
+}
+
+// OpenCode model for a stage: models.opencode[stage] (a provider/model), else opencode/claude-<tier>-5-5 from the stage's Claude tier.
+function opencodeModel(stage, cfg) {
+  const models = isPlainObject(cfg.models) ? cfg.models : {};
+  const set = isPlainObject(models.opencode) ? models.opencode[stage] : undefined;
+  if (typeof set === "string" && set) return set;
+  const tier = models[stage];
+  if (typeof tier === "string" && /^(haiku|sonnet|opus)$/.test(tier)) return `opencode/claude-${tier}-5-5`;
+  throw new Error(`models.${stage}: no OpenCode model for ${JSON.stringify(tier)}; set models.opencode.${stage} to a provider/model`);
 }
 
 function headerValue(text, key) {
@@ -187,7 +239,7 @@ function tableRows(text, heading) {
 
 function parseRun(change) {
   const file = path.join(CHANGES_DIR, change, "run.md");
-  const text = read(file);
+  const text = readText(file);
   if (text === null) return null;
   const stages = tableRows(text, "Stages").map((c) => ({
     stage: (c[0] || "").toLowerCase(), status: (c[1] || "").toLowerCase(), agent: c[2] || "",
@@ -300,7 +352,7 @@ function openFile(absPath) {
 
 function renderRefinementSummary(key) {
   const dir = path.join(REF_DIR, key);
-  const ticket = read(path.join(dir, "ticket.md")) || "";
+  const ticket = readText(path.join(dir, "ticket.md")) || "";
   const ref = parseRefinement(key) || { key, source: "", tracker: "", status: "drafting", questions: [] };
   let src = null;
   try { src = readSource(key); } catch { src = null; }
@@ -381,15 +433,15 @@ function renderPlanSummary(change) {
   const run = parseRun(change);
   const { problems, openQuestions } = planProblems(change);
   const base = path.join(CHANGES_DIR, change);
-  const task = read(path.join(base, "task.md")) || "";
+  const task = readText(path.join(base, "task.md")) || "";
   const source = ((/^Source:[ \t]*(.*)$/m.exec(task.slice(0, 2000)) || [])[1] || "").trim() || "unknown";
-  const summary = read(planBriefPath(base)) || "";
+  const summary = readText(planBriefPath(base)) || "";
   const section = (h) => markdownSection(summary, h);
   const acs = taskAcs(change);
   const fast = run.path === "fast";
   const dir = fast ? null : openspecChangeDir(change);
   const reqs = dir ? specRequirements(dir) : [];
-  const tests = fast ? fastTests(read(path.join(base, "plan.md")) || "") : [];
+  const tests = fast ? fastTests(readText(path.join(base, "plan.md")) || "") : [];
   const coverOf = (id) => fast
     ? tests.filter((t) => t.covers.includes(id)).map((t) => t.raw.replace(/^[-*]\s+/, ""))
     : reqs.filter((r) => r.covers !== null && acIdsIn(r.covers).includes(id)).map((r) => r.name);
@@ -520,7 +572,7 @@ function renderDeliverySummary(change) {
   for (const k of num(/^build-review-(\d+)\.md$/)) {
     const verdicts = new Map();
     for (const f of [`review-${k + 1}.md`, `security-review-${k + 1}.md`]) {
-      for (const c of roundTables(read(path.join(base, f)) || "").previous || []) verdicts.set(c[0], (c[2] || "").toLowerCase());
+      for (const c of roundTables(readText(path.join(base, f)) || "").previous || []) verdicts.set(c[0], (c[2] || "").toLowerCase());
     }
     for (const a of reviewAnswers(change, k)) {
       if (a.kind !== "disputed") continue;
@@ -550,9 +602,9 @@ function renderDeliverySummary(change) {
 
   const reviews = num(/^review-(\d+)\.md$/);
   // Format 2: the approving round deliver-input uses; format 1: review.md.
-  const reviewText = run.format >= 2 ? read(path.join(base, `review-${reviewRound(change)}.md`)) || "" : read(path.join(base, "review.md")) || "";
+  const reviewText = run.format >= 2 ? readText(path.join(base, `review-${reviewRound(change)}.md`)) || "" : readText(path.join(base, "review.md")) || "";
   const acRows = (roundTables(reviewText).acs || []).map((c) => ({ ac: c[0] || "", verdict: c[1] || "", evidence: c[2] || "" }));
-  const summary = read(planBriefPath(base)) || "";
+  const summary = readText(planBriefPath(base)) || "";
   const link = (() => { try { return trackerLink(run, cfg); } catch { return { type: "none", key: null }; } })();
   let files = [];
   try { files = changedFiles().files; } catch (err) { problems.push(`changed files unavailable: ${err.message}`); }
@@ -570,7 +622,7 @@ function renderDeliverySummary(change) {
   const roundRows = [];
   for (const [prefix, label] of [["review", "Review"], ["security-review", "Security review"]]) {
     for (const k of num(new RegExp(`^${prefix}-(\\d+)\\.md$`))) {
-      const text = read(path.join(base, `${prefix}-${k}.md`)) || "";
+      const text = readText(path.join(base, `${prefix}-${k}.md`)) || "";
       const found = roundFindings(text) || [];
       const blocking = found.filter((f) => f.severity.toLowerCase() === "blocking").length;
       roundRows.push(`<tr><td>${label}</td><td>${k}</td><td>${e(headerValue(text, "Status") || "unknown")}</td><td>${found.length} (${blocking} blocking)</td></tr>`);
@@ -639,12 +691,14 @@ Setup and quality
   approve tune                                 Apply the tune proposal
   verify [--change <name>] [--strict]          Deterministic checks (same as CI)
   doctor                                       Check the installation
+  opencode-agents [--write|--check] [--json]   Generate the OpenCode agents in .opencode/agents from the config and the scope lists
   version                                      Groundwork and OpenSpec versions
   help                                         This list
 
 Internal (used by the orchestrator)
   config [--json]                              Effective config after version 1 migration
   stats [--json] [--now <YYYY-MM-DD>]          Review findings, loops, tokens and stuck changes (facts for the audit)
+  tokens --opencode <sessionID> [--json]       Token total of an OpenCode stage's child session (n/a when unknown)
   context [--json]                             Always-loaded context per file, its token total and stale references
   classify "<arg>" [--json]                    Ticket, refinement or prompt
   refinement <key> [--json]                    Parsed refinement record
@@ -734,7 +788,7 @@ function listRefinements() {
 
 function parseRefinement(key) {
   if (!validRefinementKey(key)) return null;
-  const text = read(path.join(REF_DIR, key, "refinement.md"));
+  const text = readText(path.join(REF_DIR, key, "refinement.md"));
   if (text === null) return null;
   const fp = headerValue(text, "Ticket fingerprint");
   const start = text.search(/^##\s+Questions\s*$/mi);
@@ -798,7 +852,7 @@ function markdownSection(text, heading) {
 }
 
 function readyProblems(key) {
-  const ticket = read(path.join(REF_DIR, key, "ticket.md")) || "";
+  const ticket = readText(path.join(REF_DIR, key, "ticket.md")) || "";
   const problems = [];
   const ac = markdownSection(ticket, "Acceptance criteria") || "";
   const blocks = ac.split(/^###\s+/m).slice(1).map((b) => ({ title: b.split(/\r?\n/)[0].trim(), body: b }));
@@ -876,7 +930,7 @@ function cmdRefineComment() {
       ref.source === "prompt" ? `Reply with "${open[0].id}: <answer>" for each question.` : `Reply in a comment as "${open[0].id}: <answer>".`];
   } else {
     if (readyProblems(key).length) return fail("not ready: run gw.mjs ready " + key);
-    const ticket = read(path.join(REF_DIR, key, "ticket.md")) || "";
+    const ticket = readText(path.join(REF_DIR, key, "ticket.md")) || "";
     const title = (ticket.split(/\r?\n/).find((l) => /^#\s/.test(l)) || "").replace(/^#\s+/, "").trim();
     const ac = acceptanceCriteria(ticket).map((c) => c.id + " WHEN " + c.when + " THEN " + c.then);
     const out = (markdownSection(ticket, "Out of scope") || "").split(/\r?\n/).filter((l) => /^\s*- /.test(l)).map((l) => l.trim());
@@ -897,7 +951,7 @@ function cmdNewQuestions() {
     return;
   }
   const fail = (msg) => { print({ error: msg }, msg); process.exitCode = 1; };
-  const ticket = read(path.join(REF_DIR, key, "ticket.md"));
+  const ticket = readText(path.join(REF_DIR, key, "ticket.md"));
   if (ticket === null) return fail(`no ticket.md for refinement "${key}"`);
   const ref = parseRefinement(key);
   let next = 1 + Math.max(0, ...(ref ? ref.questions : []).map((q) => Number(String(q.id).replace(/\D/g, "")) || 0));
@@ -925,7 +979,7 @@ function readSource(key) {
 
 // Same, for any source.json path; `what` names the owner in the "no source.json" message.
 function readSourceAt(absPath, what) {
-  const text = read(absPath);
+  const text = readText(absPath);
   if (text === null) throw new Error(`no source.json for ${what}`);
   const bad = (why) => new Error(`source.json is not valid: ${why}`);
   let s;
@@ -1371,7 +1425,7 @@ const acIdsIn = (text) => [...String(text).matchAll(/\bAC\d+\b/g)].map((m) => m[
 
 // ACs of task.md as [{ id, text }]. Only "### AC<n>" headings under "## Acceptance criteria" count; escaped (\###) lines are body text.
 function taskAcs(change) {
-  const task = read(path.join(CHANGES_DIR, change, "task.md"));
+  const task = readText(path.join(CHANGES_DIR, change, "task.md"));
   const ac = task === null ? null : markdownSection(task, "Acceptance criteria");
   if (!ac) return [];
   const out = [];
@@ -1388,7 +1442,7 @@ const taskAcIds = (change) => taskAcs(change).map((a) => a.id);
 function specRequirements(dir) {
   const out = [];
   for (const f of walk(path.join(dir, "specs")).filter((x) => path.basename(x) === "spec.md").sort()) {
-    const text = (read(f) || "").replace(/\r\n/g, "\n");
+    const text = (readText(f) || "").replace(/\r\n/g, "\n");
     for (const sec of text.split(/^(?=##(?!#)\s)/m)) {
       if (/^##[ \t]+REMOVED Requirements/i.test(sec)) continue; // a removal has no behavior to cover or test
       for (const body of sec.split(/^(?=###[ \t]+Requirement:)/m).filter((x) => /^###[ \t]+Requirement:/.test(x))) {
@@ -1432,16 +1486,16 @@ function taskGroups(change) {
   const groups = [];
   const structure = [];
   if (fast) {
-    const plan = read(path.join(CHANGES_DIR, change, "plan.md")) || "";
+    const plan = readText(path.join(CHANGES_DIR, change, "plan.md")) || "";
     const files = (markdownSection(plan, "Where") || "").split(/\r?\n/)
       .map((l) => /^\s*[-*]\s+(.*\S)\s*$/.exec(l)).filter(Boolean)
       .map((m) => { const i = m[1].indexOf(" - "); return (i < 0 ? m[1] : m[1].slice(0, i)).trim(); }).filter(Boolean);
-    const build = read(path.join(CHANGES_DIR, change, "build-fast.md"));
+    const build = readText(path.join(CHANGES_DIR, change, "build-fast.md"));
     const status = build === null ? "" : (headerValue(build, "Status") || "");
     groups.push({ n: 1, name: "fast path", dependsOn: [], files, tasks: 0, done: /^done$/i.test(status), built: build !== null, blocked: /^blocked$/i.test(status) });
   } else {
     const dir = openspecChangeDir(change);
-    const tasks = dir ? read(path.join(dir, "tasks.md")) : null;
+    const tasks = dir ? readText(path.join(dir, "tasks.md")) : null;
     for (const block of (tasks || "").replace(/\r\n/g, "\n").split(/^(?=##(?!#)\s)/m).filter((b) => /^##[ \t]+\d+\./.test(b))) {
       const head = /^##[ \t]+(\d+)\.[ \t]*(.*)$/m.exec(block);
       const dep = /^Depends on:[ \t]*(.*)$/m.exec(block);
@@ -1456,7 +1510,7 @@ function taskGroups(change) {
         done: boxes.length > 0 && boxes.every((b) => b[1] !== " "),
         built: false, blocked: false,
       });
-      const report = read(path.join(CHANGES_DIR, change, `build-g${head[1]}.md`));
+      const report = readText(path.join(CHANGES_DIR, change, `build-g${head[1]}.md`));
       const last = groups[groups.length - 1];
       last.built = report !== null;
       last.blocked = report !== null && /^blocked$/i.test(headerValue(report, "Status") || "");
@@ -1524,7 +1578,7 @@ function planProblems(change) {
   counts.acs = acs.length;
   const base = path.join(CHANGES_DIR, change);
   if (run.path === "fast") {
-    const plan = read(path.join(base, "plan.md"));
+    const plan = readText(path.join(base, "plan.md"));
     if (plan === null) problems.push("plan.md is missing");
     else {
       const sections = {};
@@ -1569,7 +1623,7 @@ function planProblems(change) {
       seenGroups.add(g.n);
     }
     if (dir && structure.length === 0) problems.push("tasks.md has no task groups");
-    const proposal = dir ? read(path.join(dir, "proposal.md")) : null;
+    const proposal = dir ? readText(path.join(dir, "proposal.md")) : null;
     const oq = proposal === null ? null : markdownSection(proposal, "Open Questions");
     openQuestions = (oq || "").split(/\r?\n/).map((l) => /^\s*[-*]\s+(.*\S)\s*$/.exec(l)).filter(Boolean).map((m) => m[1]).filter((t) => !/^none$/i.test(t));
   }
@@ -1654,7 +1708,7 @@ function buildProblems(change) {
   const warnings = [];
   const planned = [];
   if (fast) {
-    for (const t of fastTests(read(path.join(base, "plan.md")) || "")) {
+    for (const t of fastTests(readText(path.join(base, "plan.md")) || "")) {
       if (!t.level) continue;
       const name = t.raw.replace(/^[-*]\s+(?:unit|integration|e2e)\s*:\s*/i, "").replace(/\s*\(\s*covers[^)]*\)\s*$/i, "").trim();
       planned.push({ name, key: name.toLowerCase(), level: t.level, text: t.raw });
@@ -1672,7 +1726,7 @@ function buildProblems(change) {
   };
   const rows = [];
   for (const file of buildReports(base)) {
-    const text = read(path.join(base, file)) || "";
+    const text = readText(path.join(base, file)) || "";
     rows.push(...coverageRows(text).map((r) => ({ ...r, file })));
     if (/^blocked$/i.test(headerValue(text, "Status") || "")) {
       const m = /^build-(?:g(\d+)|(fast)|(review-\d+))\.md$/.exec(file);
@@ -1692,7 +1746,7 @@ function buildProblems(change) {
     const file = `build-review-${k}.md`;
     const answered = new Set(reviewAnswers(change, k).map((a) => a.id));
     for (const [name, fits] of [[`review-${k}.md`, REVIEW_ID], [`security-review-${k}.md`, SECURITY_ID]]) {
-      for (const f of roundFindings(read(path.join(base, name)) || "") || []) {
+      for (const f of roundFindings(readText(path.join(base, name)) || "") || []) {
         if (fits.test(f.id) && f.severity.toLowerCase() === "blocking" && !answered.has(f.id)) add(`${file}: blocking finding ${f.id} of review-${k} has no answer`, file);
       }
     }
@@ -1811,7 +1865,7 @@ function exploreHeader(text) {
 function cmdCheckExplore() {
   const change = changeArg("Usage: check-explore <change> [--json]");
   if (!change) return;
-  const text = read(path.join(CHANGES_DIR, change, "explore.md"));
+  const text = readText(path.join(CHANGES_DIR, change, "explore.md"));
   if (text === null) {
     const msg = `no explore.md for change "${change}"`;
     print({ path: null, sensitive: null, problems: [msg] }, msg);
@@ -1872,7 +1926,7 @@ function cmdTask() {
   if (!change) return;
   try {
     const st = refinedState(change);
-    const ticket = st.ready && st.unchanged ? read(path.join(REF_DIR, st.refinement, "ticket.md")) : null;
+    const ticket = st.ready && st.unchanged ? readText(path.join(REF_DIR, st.refinement, "ticket.md")) : null;
     const text = ticket !== null ? `Source: refinement ${st.refinement}\n\n${ticket}` : renderTask(changeSource(change));
     const file = path.join(CHANGES_DIR, change, "task.md");
     fs.writeFileSync(file, text);
@@ -1951,7 +2005,7 @@ function cmdRefs() {
     if (a === "--ref" && rest[i + 1] && !rest[i + 1].startsWith("--")) candidates.push({ url: rest[i + 1].trim(), reason: "given with --ref" });
     else if (a.startsWith("--ref=")) candidates.push({ url: a.slice(6).trim(), reason: "given with --ref" });
   });
-  const task = read(path.join(CHANGES_DIR, change, "task.md")) || "";
+  const task = readText(path.join(CHANGES_DIR, change, "task.md")) || "";
   for (const raw of task.match(/https?:\/\/[^\s<>"')\]]+/gi) || []) {
     const url = raw.replace(/[.,;:!?]+$/, "");
     let host;
@@ -2090,21 +2144,29 @@ function gitState() {
     try { h = entryHash(abs); } catch (e) { if (!key.startsWith("home:")) throw e; h = `error: ${e.code || "unreadable"}`; }
     if (h) files[key] = h;
   };
-  const cfgTree = (dir, prefix) => {
+  // skip(rel): true for an entry under the tree (its path relative to the tree's top, "/" separated) that is not watched.
+  const cfgTree = (dir, prefix, skip = () => false, sub = "") => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const abs = path.join(dir, e.name);
-      if (e.isDirectory()) cfgTree(abs, `${prefix}${e.name}/`);
+      if (skip(`${sub}${e.name}`)) continue;
+      if (e.isDirectory()) cfgTree(abs, `${prefix}${e.name}/`, skip, `${sub}${e.name}/`);
       else cfgHash(abs, `${prefix}${e.name}`);
     }
   };
   const cfgSet = (base, label, names, dirs) => {
     for (const n of names) cfgHash(path.join(base, n), `${label}:${n}`);
-    for (const d of dirs) cfgTree(path.join(base, d), `${label}:${d}/`);
+    for (const d of dirs) { const [dir, skip] = Array.isArray(d) ? d : [d]; cfgTree(path.join(base, dir), `${label}:${dir}/`, skip); }
   };
-  cfgSet(ROOT, "config", [".claude/settings.json", ".claude/settings.local.json", ".mcp.json"], [".claude/agents", ".claude/commands", ".claude/skills", ".claude/hooks"]);
-  cfgSet(process.env.GW_HOME_OVERRIDE || homedir(), "home", [".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md"], [".claude/agents", ".claude/commands", ".claude/skills"]);
+  // OpenCode loads agents, commands, plugins, custom tools and config from anywhere in these trees (plural and singular folder
+  // names), so all of it is watched. Not watched: installed packages (node_modules at any depth); OpenCode's own housekeeping
+  // files at the top of each tree (package.json, bun.lock and .gitignore, which it writes when it installs plugin packages);
+  // and in ~/.config/opencode Groundwork's own install and backups and service.json, which OpenCode's background service rewrites.
+  const noPackages = (r) => /(^|\/)node_modules$/i.test(r) || /^(package\.json|bun\.lock|\.gitignore)$/i.test(r);
+  const homeOpencodeSkip = (r) => noPackages(r) || /^(groundwork|groundwork-backups|service\.json)$/i.test(r);
+  cfgSet(ROOT, "config", [".claude/settings.json", ".claude/settings.local.json", ".mcp.json", "opencode.json", "opencode.jsonc"], [".claude/agents", ".claude/commands", ".claude/skills", ".claude/hooks", [".opencode", noPackages]]);
+  cfgSet(process.env.GW_HOME_OVERRIDE || homedir(), "home", [".claude/settings.json", ".claude/settings.local.json", ".claude/CLAUDE.md"], [".claude/agents", ".claude/commands", ".claude/skills", [".config/opencode", homeOpencodeSkip]]);
   // Git config and attributes outside the repository can define filters that the next git call runs. They are home: entries,
   // so a change asks the user. Recorded, with "absent" for a missing file:
   // - every file `git config --list --show-origin` reports (system, global, XDG, include files that exist);
@@ -2394,13 +2456,16 @@ function cmdDoctor() {
   add("CI workflow", exists(path.join(ROOT, ".github", "workflows", "groundwork-verify.yml")), "optional: .github/workflows/groundwork-verify.yml", "warn");
   const agentsMd = read(path.join(ROOT, "AGENTS.md"));
   add("AGENTS.md has the Groundwork block", !!agentsMd && agentsMd.includes("groundwork:start"), "run: /groundwork init", "warn");
+  // OpenCode reads AGENTS.md itself, and init there writes no CLAUDE.md. The OpenCode install is the one with commands/groundwork.md
+  // next to scripts/ (the Claude plugin never has a commands/ folder).
+  const fromOpenCode = exists(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "commands", "groundwork.md"));
   const claudeMd = read(path.join(ROOT, "CLAUDE.md"));
-  add("CLAUDE.md imports AGENTS.md", !!claudeMd && /^@AGENTS\.md\s*$/m.test(claudeMd), "run: /groundwork init", "warn");
+  if (!fromOpenCode) add("CLAUDE.md imports AGENTS.md", !!claudeMd && /^@AGENTS\.md\s*$/m.test(claudeMd), "run: /groundwork init", "warn");
 
   // Read only the server names from these files; they hold secrets.
   const mcpNames = () => {
     const names = (o) => (isPlainObject(o) && isPlainObject(o.mcpServers) ? Object.keys(o.mcpServers) : []);
-    const parse = (f) => { try { return JSON.parse(read(f) || "null"); } catch { return null; } };
+    const parse = (f) => { try { return JSON.parse(readText(f) || "null"); } catch { return null; } };
     const user = parse(path.join(process.env.GW_HOME_OVERRIDE || homedir(), ".claude.json"));
     return [
       ...names(user),
@@ -2439,6 +2504,31 @@ function cmdDoctor() {
   const bad = (Array.isArray(cfg.context && cfg.context.trustedDomains) ? cfg.context.trustedDomains : []).filter((d) => typeof d !== "string" || !/^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/.test(d));
   add("Trusted domains", bad.length === 0, bad.length === 0 ? `${(cfg.context && cfg.context.trustedDomains || []).length} trusted domain(s)` : `context.trustedDomains entries must be lowercase hostnames (no scheme, path, port or wildcard): ${bad.map((d) => JSON.stringify(d)).join(", ")}`);
 
+  if (isPlainObject(cfg.models)) {
+    const stages = Object.keys(cfg.models).filter((k) => k !== "opencode");
+    if (cfg._opencodeBad) add("OpenCode models", false, "models.opencode must be an object keyed by stage");
+    for (const [stage, v] of Object.entries(isPlainObject(cfg.models.opencode) ? cfg.models.opencode : {})) {
+      if (!stages.includes(stage)) add(`OpenCode model (${stage})`, false, `models.opencode.${stage}: unknown stage; expected one of ${stages.join(", ")}`);
+      else if (typeof v !== "string" || !v.includes("/")) add(`OpenCode model (${stage})`, false, `models.opencode.${stage} must be a provider/model, got ${JSON.stringify(v)}`);
+    }
+    // OpenCode fixes one model per agent: the fast plan runs as gw-plan and the security review as gw-review (ruling R8).
+    const runsAs = { planFast: ["gw-plan", "plan", "the fast plan"], securityReview: ["gw-review", "review", "the security review"] };
+    for (const [stage, [agent, own, what]] of Object.entries(runsAs)) {
+      if ((cfg._opencodeSet || []).includes(stage)) add(`OpenCode model (${stage}) unused`, false, `models.opencode.${stage} is not used on OpenCode: ${what} runs as ${agent}, on models.opencode.${own}`, "warn");
+    }
+  }
+
+  // An agent entry named gw-* in the repository's OpenCode config can override the generated agent's permissions.
+  for (const rel of ["opencode.json", "opencode.jsonc", ".opencode/opencode.json", ".opencode/opencode.jsonc"]) {
+    const text = readText(path.join(ROOT, ...rel.split("/")));
+    if (text === null) continue;
+    let conf;
+    try { conf = JSON.parse(stripJsonc(text)); } catch { conf = undefined; }
+    if (!isPlainObject(conf)) { add(`OpenCode config ${rel}`, false, `could not read ${rel} (not valid JSON or JSONC), so its agent entries were not checked`, "warn"); continue; }
+    const ours = isPlainObject(conf.agent) ? Object.keys(conf.agent).filter((k) => /^gw-/i.test(k)) : [];
+    add(`OpenCode config ${rel}`, ours.length === 0, ours.length ? `defines agent ${ours.join(", ")}, which can override the permissions of the generated agent; remove ${ours.length > 1 ? "those entries" : "that entry"}` : "no gw-* agent entries", "warn");
+  }
+
   // Plugin self-check: only when running from the plugin, not the vendored CI copy.
   const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const agentsDir = path.join(pluginRoot, "agents");
@@ -2467,6 +2557,26 @@ function cmdDoctor() {
       const found = `tools: ${tools.join(", ") || "(none)"}; disallowedTools: ${dis.join(", ") || "(none)"}`;
       const wanted = `tools: ${(exp.tools || []).join(", ") || "(none)"}; disallowedTools: ${(exp.disallowed || []).join(", ") || "(none)"}`;
       add(`Agent ${name} permissions`, ok, ok ? found : `expected ${wanted}, found ${found}`);
+    }
+  }
+
+  // OpenCode rows: only in a repository that holds generated agents (.opencode/agents/gw-*.md).
+  let generated = [];
+  try { generated = fs.readdirSync(path.join(ROOT, ".opencode", "agents")).filter((n) => /^gw-.*\.md$/i.test(n)); } catch { /* none */ }
+  if (generated.length) {
+    // The vendored CI copy has no agents folder next to it and cannot generate them, so it skips this row.
+    if (exists(agentsDir) && !cfg._error) {
+      let differs = null, why = "";
+      try { differs = opencodeDiffers(Object.keys(OPENCODE_AGENTS).map((name) => ({ name, rel: opencodeAgentPath(name), text: opencodeAgentText(name, cfg, agentsDir) }))); } catch (e) { why = e.message; }
+      if (why) add("OpenCode agents", false, `cannot compare the generated agents: ${why}`);
+      else add("OpenCode agents", differs.length === 0, differs.length ? `differ from what opencode-agents writes: ${differs.join(", ")}; run: node "${fileURLToPath(import.meta.url)}" opencode-agents --write` : "match the config and the scope lists");
+    }
+    const ov = hostRun("opencode", ["--version"], {}, 20000);
+    const ver = ov.code === 0 ? ((ov.stdout + " " + ov.stderr).match(/\d+\.\d+(?:\.\d+)?/) || [])[0] : null;
+    if (!ver) add("OpenCode version", false, ov.notFound ? "opencode not found" : "could not read the OpenCode version (opencode ran but printed no version or exited non-zero)", "warn");
+    else {
+      const [oMaj, oMin] = ver.split(".").map(Number);
+      add("OpenCode version", oMaj > 2 || (oMaj === 2 && oMin >= 1), `OpenCode ${ver} is older than 2.1, the version Groundwork is tested with (V2 permissions)`, "warn");
     }
   }
 
@@ -2623,7 +2733,7 @@ function changeStats(change, now) {
     const m = /^review-(\d+)\.md$/.exec(f);
     if (m) { reviewRounds++; if (isFeedbackRound(change, Number(m[1]))) prFeedbackLoops++; }
     if (!m && !/^review-\d+-g\d+\.md$/.test(f) && !/^security-review-\d+\.md$/.test(f)) continue;
-    const rows = roundTables(read(path.join(dir, f)) || "").findings || [];
+    const rows = roundTables(readText(path.join(dir, f)) || "").findings || [];
     const seen = new Set();
     for (const c of rows) {
       const id = c[0] || "";
@@ -2840,7 +2950,7 @@ function cmdVerify() {
       const n = reviewRounds.filter((x) => /^review-\d+\.md$/.test(x.f)).map((x) => Number(x.m[1])).filter((k) => !isFeedbackRound(change, k));
       if (n.length) { latestN = Math.max(...n); latest = `review-${latestN}.md`; }
     }
-    const review = read(path.join(dir, latest));
+    const review = readText(path.join(dir, latest));
     if (exists(path.join(dir, "deliver.md"))) {
       if (!review) add("error", `${where}/deliver.md`, "delivered without a review");
       else if (r.format >= 2 && latestN) {
@@ -2867,7 +2977,7 @@ function cmdVerify() {
           if (!rounds.has(n + 1)) continue;
           const answered = new Set(reviewAnswers(change, n).map((a) => a.id));
           for (const [name, fits] of [[`review-${n}.md`, REVIEW_ID], [`security-review-${n}.md`, SECURITY_ID]]) {
-            for (const f of roundFindings(read(path.join(dir, name)) || "") || []) {
+            for (const f of roundFindings(readText(path.join(dir, name)) || "") || []) {
               if (fits.test(f.id) && f.severity.toLowerCase() === "blocking" && !answered.has(f.id)) add("error", where, `review-${n}: blocking finding ${f.id} has no answer in build-review-${n}.md`);
             }
           }
@@ -2878,15 +2988,15 @@ function cmdVerify() {
     if (r.path === "full" && ["plan", "awaiting-approval", "build", "review", "deliver", "awaiting-delivery-approval", "awaiting-merge", "archive", "done"].includes(r.current)) {
       const osDir = openspecChangeDir(change);
       if (!osDir) { add("error", where, `OpenSpec change "${change}" not found under openspec/changes/`); continue; }
-      const tasks = read(path.join(osDir, "tasks.md")) || "";
+      const tasks = readText(path.join(osDir, "tasks.md")) || "";
       const open = (tasks.match(/^\s*- \[ \]/gm) || []).length;
       if (exists(path.join(dir, "deliver.md")) && open) add("error", rel(path.join(osDir, "tasks.md")), `${open} unchecked task(s) after delivery`);
 
-      const build = read(path.join(dir, "build.md"));
+      const build = readText(path.join(dir, "build.md"));
       const buildDone = r.stages.some((s) => s.stage === "build" && s.status === "done");
       if (r.format < 2 && build && buildDone) {
         const specFiles = walk(path.join(osDir, "specs")).filter((p) => p.endsWith(".md"));
-        const scenarios = specFiles.flatMap((p) => [...(read(p) || "").matchAll(/^####\s+Scenario:\s*(.+)$/gm)].map((m) => m[1].trim()));
+        const scenarios = specFiles.flatMap((p) => [...(readText(p) || "").matchAll(/^####\s+Scenario:\s*(.+)$/gm)].map((m) => m[1].trim()));
         const missing = scenarios.filter((s) => !build.toLowerCase().includes(s.toLowerCase()));
         for (const s of missing) add("error", `${where}/build.md`, `scenario without a mapped test: "${s}"`);
       }
@@ -3077,7 +3187,7 @@ function snapshotTree(cwd, indexFile, { env: pinned = {}, from = null } = {}) {
 
 // Agent and harness configuration (checked case-insensitively: Windows and macOS file systems fold case). A patch never
 // delivers it: the group is built again sequentially on the main tree, where check-scope asks the user about config: changes.
-const isAgentConfig = (p) => /^\.claude(\/|$)/i.test(p) || /^\.mcp\.json$/i.test(p) || /(^|\/)CLAUDE(\.local)?\.md$/i.test(p);
+const isAgentConfig = (p) => /^\.claude(\/|$)/i.test(p) || /^\.mcp\.json$/i.test(p) || /(^|\/)CLAUDE(\.local)?\.md$/i.test(p) || /^\.opencode(\/|$)/i.test(p) || /^opencode\.jsonc?$/i.test(p);
 
 // Names a file system may read as another path: backslash or colon (Windows separators, NTFS streams), a component ending in
 // "." or space (Windows strips them), or one containing ~<digit> (an 8.3 short name such as GROUND~1). Such names are legal on
@@ -3361,7 +3471,7 @@ function reviewLoops(change) {
 // or level is absent). Mismatch: review status differs from after-build. Regression: not passed in review, passed at baseline.
 // A level not configured on the compared side is neither.
 function testComparison(change, label) {
-  const record = (name) => { try { const j = JSON.parse(read(path.join(CHANGES_DIR, change, "tests", `${name}.json`)) ?? "null"); return isPlainObject(j) ? j : null; } catch { return null; } };
+  const record = (name) => { try { const j = JSON.parse(readText(path.join(CHANGES_DIR, change, "tests", `${name}.json`)) ?? "null"); return isPlainObject(j) ? j : null; } catch { return null; } };
   const status = (rec, lv) => (rec && isPlainObject(rec.levels) && isPlainObject(rec.levels[lv]) && typeof rec.levels[lv].status === "string" ? rec.levels[lv].status : "missing");
   const baseline = record("baseline"), afterBuild = record("after-build"), review = record(label);
   const levels = TEST_LEVELS.map((level) => ({ level, baseline: status(baseline, level), afterBuild: status(afterBuild, level), review: status(review, level) }));
@@ -3462,7 +3572,7 @@ const roundFindings = (text) => findingsOf(roundTables(text).findings);
 
 // Builder answers of build-review-<n>.md: [{ id, kind: "fixed"|"disputed" }] from its "## Review answers" lines.
 function reviewAnswers(change, n) {
-  const text = read(path.join(CHANGES_DIR, change, `build-review-${n}.md`));
+  const text = readText(path.join(CHANGES_DIR, change, `build-review-${n}.md`));
   if (text === null) return [];
   return (markdownSection(text, "Review answers") || "").split(/\r?\n/)
     .map((l) => /^\s*[-*]\s+([A-Z]\d+(?:\.\d+)?)\s+(fixed|disputed)\s*:(.*)$/i.exec(l)).filter(Boolean)
@@ -3518,7 +3628,7 @@ function roundFiles(change, n, { normal = false } = {}) {
   const groups = run.path === "full" ? taskGroups(change).groups : [];
   const threshold = Number(cfg.build && cfg.build.groupThreshold);
   const split = run.path === "full" && groups.length > 0 && Number.isFinite(threshold) && groups.length >= threshold;
-  const explore = read(path.join(CHANGES_DIR, change, "explore.md"));
+  const explore = readText(path.join(CHANGES_DIR, change, "explore.md"));
   const sensitive = headerValue(run.text, "Sensitive") !== "no" || (explore !== null && exploreHeader(explore).sensitive === true);
   const files = [{ file: `review-${n}.md`, mode: split ? "overall" : "full", kind: "review" }];
   if (sensitive) files.push({ file: `security-review-${n}.md`, mode: "security", kind: "security" });
@@ -3542,7 +3652,7 @@ function reviewProblems(change, n) {
   const lastBlocking = { R: [], S: [] };
   for (let k = 1; k < n; k++) {
     for (const [prefix, name, fits] of [["R", `review-${k}.md`, REVIEW_ID], ["S", `security-review-${k}.md`, SECURITY_ID]]) {
-      for (const f of roundFindings(read(path.join(dir, name)) || "") || []) {
+      for (const f of roundFindings(readText(path.join(dir, name)) || "") || []) {
         if (!fits.test(f.id)) continue;
         earlier[prefix].set(f.id, f.severity.toLowerCase());
         if (k === n - 1 && f.severity.toLowerCase() === "blocking" && !lastBlocking[prefix].includes(f.id)) lastBlocking[prefix].push(f.id);
@@ -3556,7 +3666,7 @@ function reviewProblems(change, n) {
   const groupsRequesting = [];
   const feedbackRound = expected.some((f) => f.feedback);
   for (const { file, mode, kind, group, feedback } of expected) {
-    const text = read(path.join(dir, file));
+    const text = readText(path.join(dir, file));
     if (text === null) { problems.push(`${file} is missing`); allApproved = false; continue; }
     const field = {};
     for (const f of ["Change", "Stage", "Round", "Mode", "Status"]) {
@@ -3708,7 +3818,7 @@ function evidenceScreenshots(change, { format = 2 } = {}) {
   const screenshots = [];
   const prefix = `.groundwork/changes/${change}/`;
   for (const file of [...(format === 1 ? ["build.md"] : []), ...buildReports(dir)]) {
-    for (const row of coverageRows(read(path.join(dir, file)) || "")) {
+    for (const row of coverageRows(readText(path.join(dir, file)) || "")) {
       const s = row.screenshot;
       if (s && s !== "-" && (s.startsWith(prefix) ? s.slice(prefix.length) : s).startsWith("evidence/") && !screenshots.includes(s)) screenshots.push(s);
     }
@@ -3757,7 +3867,7 @@ function cmdReviewInput() {
     try { packs = fs.readdirSync(inputs).map((f) => /^review-(\d+)\.md$/.exec(f)).filter(Boolean).map((m) => Number(m[1])).filter((k) => k < n).sort((a, b) => b - a); } catch { /* no inputs/ yet */ }
     let prev = null;
     for (const k of packs) {
-      const t = headerValue(read(path.join(inputs, `review-${k}.md`)) || "", "Tree");
+      const t = headerValue(readText(path.join(inputs, `review-${k}.md`)) || "", "Tree");
       if (t && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(t)) { prev = t; break; }
     }
     if (prev && gitAt(ROOT, ["cat-file", "-e", `${prev}^{tree}`]).ok) {
@@ -3850,9 +3960,9 @@ function cmdDeliverInput() {
     const r = reviewProblems(change, n);
     if (!r.approved) return fail(`deliver-input: review round ${n} of ${change} is not approved${r.problems.length ? `: ${r.problems.join("; ")}` : ""}`);
     review = roundFiles(change, n).filter((f) => f.kind !== "group").map((f) => f.file);
-    acs = (roundTables(read(path.join(dir, `review-${n}.md`)) || "").acs || []).map((c) => ({ ac: c[0] || "", verdict: c[1] || "", evidence: c[2] || "" }));
+    acs = (roundTables(readText(path.join(dir, `review-${n}.md`)) || "").acs || []).map((c) => ({ ac: c[0] || "", verdict: c[1] || "", evidence: c[2] || "" }));
   } else {
-    const status = headerValue(read(path.join(dir, "review.md")) || "", "Status");
+    const status = headerValue(readText(path.join(dir, "review.md")) || "", "Status");
     if ((status || "").toLowerCase() !== "approved") return fail(`deliver-input: review.md of ${change} is not approved`);
     review = ["review.md"];
   }
@@ -3944,7 +4054,7 @@ function markdownHeadings(lines) {
 function deliverProblems(change) {
   const dir = path.join(CHANGES_DIR, change);
   const parsed = { branch: null, subject: null, body: null, title: null, description: null, changelog: null };
-  const text = read(path.join(dir, "deliver.md"));
+  const text = readText(path.join(dir, "deliver.md"));
   if (text === null) return { problems: ["deliver.md is missing"], parsed };
   const problems = [];
   const lines = text.split(/\r?\n/);
@@ -4018,7 +4128,7 @@ function deliverProblems(change) {
     for (const h of DESCRIPTION_HEADINGS) if (!headings.has(h)) problems.push(`deliver.md: description has no ${h} section`);
     // Every AC of the approving review (format 2) is listed in the description's Acceptance criteria section, or anywhere in the
     // description when that section is missing. Format 1 records no AC table, so nothing is checked (ruling R1(b)).
-    const input = read(path.join(dir, "inputs", "deliver.md"));
+    const input = readText(path.join(dir, "inputs", "deliver.md"));
     if (input === null) problems.push("deliver.md: inputs/deliver.md is missing (run deliver-input)");
     else {
       let scope = parsed.description;
@@ -4053,7 +4163,7 @@ function cmdCheckDeliver() {
 
 // ---------- deliver ----------
 
-// gh or az, or their GW_FAKE_HOST stand-in (decision 1): <dir>/<tool>.json maps the call key (the leading subcommand words) to
+// gh, az or opencode, or their GW_FAKE_HOST stand-in (decision 1): <dir>/<tool>.json maps the call key (the leading subcommand words) to
 // { code, stdout, stderr }, and each call is appended to <dir>/calls.jsonl. files names the text the call reads from temporary
 // files, by flag; the fake host records it with the args so tests see the exact title and description sent.
 function hostRun(tool, args, files = {}, timeoutMs = 5 * 60 * 1000) {
@@ -4074,24 +4184,29 @@ function hostRun(tool, args, files = {}, timeoutMs = 5 * 60 * 1000) {
       }
     } catch { /* first call */ }
     fs.appendFileSync(log, JSON.stringify({ tool, args, files }) + "\n");
-    let map = null;
-    try { map = JSON.parse(fs.readFileSync(path.join(fake, `${tool}.json`), "utf8")); } catch { /* no fixture: every call fails */ }
+    let map = null, noFixture = false;
+    try { map = JSON.parse(fs.readFileSync(path.join(fake, `${tool}.json`), "utf8")); } catch { noFixture = true; /* no fixture: the tool counts as not installed */ }
     let entry = isPlainObject(map) ? map[key] : null;
     if (Array.isArray(entry)) entry = entry.length ? entry[Math.min(earlier, entry.length - 1)] : null;
     const r = isPlainObject(entry) ? entry : null;
-    if (!r) return { code: 1, stdout: "", stderr: `fake host: no response for ${key}` };
+    if (!r) return { code: 1, stdout: "", stderr: `fake host: no response for ${key}`, ...(noFixture ? { notFound: true } : {}) };
     return { code: Number(r.code) || 0, stdout: String(r.stdout ?? ""), stderr: String(r.stderr ?? "") };
   }
   const opts = { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs };
   let r;
-  // az is a .cmd script on Windows and needs cmd.exe; deliver passes it only fixed words, branch names and @file references, so
-  // no title or description text is ever on that command line. gh is an executable and runs without a shell everywhere.
-  if (process.platform === "win32" && tool === "az") {
+  // az and an npm-installed opencode are .cmd scripts on Windows and need cmd.exe. deliver passes az only fixed words, branch
+  // names and @file references, and opencode gets only fixed words and a session ID validated as ^ses_[A-Za-z0-9]+$, so no title or
+  // description text is ever on that command line (any other argument is refused here). gh is an executable and runs without a
+  // shell everywhere.
+  if (process.platform === "win32" && (tool === "az" || tool === "opencode")) {
+    if (tool === "opencode" && !args.every((a) => /^(--?[a-z][a-z-]*|[a-z]+|ses_[A-Za-z0-9]+)$/.test(a))) return { code: 1, stdout: "", stderr: "opencode: refused an argument that is not a fixed word or a session ID" };
     const q = (s) => `"${String(s).replace(/"/g, '""')}"`;
     r = spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", `"${[tool, ...args].map(q).join(" ")}"`], { ...opts, windowsVerbatimArguments: true });
   } else r = spawnSync(tool, args, opts);
-  if (r.error) return { code: 1, stdout: "", stderr: r.error.code === "ENOENT" ? `${tool} is not installed or not on PATH` : r.error.message };
-  return { code: r.status ?? 1, stdout: r.stdout || "", stderr: r.stderr || "" };
+  if (r.error) return { code: 1, stdout: "", stderr: r.error.code === "ENOENT" ? `${tool} is not installed or not on PATH` : r.error.message, ...(r.error.code === "ENOENT" ? { notFound: true } : {}) };
+  // cmd.exe reports a missing command as exit 1 and "is not recognized", not as a spawn error.
+  const notFound = process.platform === "win32" && (tool === "az" || tool === "opencode") && r.status === 1 && /is not recognized as an internal or external command/i.test(r.stderr || "");
+  return { code: r.status ?? 1, stdout: r.stdout || "", stderr: r.stderr || "", ...(notFound ? { notFound: true } : {}) };
 }
 
 // Paths of a change's folder that are generated or local state and never committed (decision 6, ruling R1(a)).
@@ -4682,7 +4797,7 @@ function cmdFeedback() {
   const n = Math.max(reviewRound(change), highestReview + 1);
   let highest = 0;
   for (let k = 1; k < n; k++) {
-    for (const f of roundFindings(read(path.join(dir, `review-${k}.md`)) || "") || []) if (REVIEW_ID.test(f.id)) highest = Math.max(highest, Number(f.id.slice(1)));
+    for (const f of roundFindings(readText(path.join(dir, `review-${k}.md`)) || "") || []) if (REVIEW_ID.test(f.id)) highest = Math.max(highest, Number(f.id.slice(1)));
   }
   const rows = items.map((it, i) => `| R${highest + 1 + i} | blocking | ${it.area} | ${feedbackCell(it.where, 200)} | ${feedbackCell(it.finding, it.max)} | ${it.fix} |`);
   const text = [`# Review round ${n}`, "", `Change: ${change}`, "Stage: review", `Round: ${n}`, "Mode: feedback", "Status: Changes requested",
@@ -4965,7 +5080,7 @@ function parseDiff(block) {
 // change again with its parsed content for tune-apply and tune-deliver. status says which Status passes: "awaiting", "applied" (the
 // one approve tune sets) or "either" (tune-apply after an approval that died before it wrote state.md).
 function tuneProblems({ status = "awaiting" } = {}) {
-  const text = read(path.join(GW_DIR, "tune", "proposal.md"));
+  const text = readText(path.join(GW_DIR, "tune", "proposal.md"));
   if (text === null) return { problems: ["proposal.md is missing"], changes: [], plans: [], summary: "", date: null };
   const items = [];
   const statuses = [];
@@ -5304,7 +5419,7 @@ function freeTuneBranch(date) {
 function cmdTuneApply() {
   if (positional.length) { console.error("Usage: tune-apply [--json]"); process.exitCode = 2; return; }
   const refuse = (error, extra = {}) => { print({ ok: false, error, ...extra }, error); process.exitCode = 1; };
-  const state = read(path.join(ROOT, ...TUNE_STATE.split("/")));
+  const state = readText(path.join(ROOT, ...TUNE_STATE.split("/")));
   if (state === null) return refuse("tune-apply: no proposal was shown. Next: `/groundwork tune`");
   if (headerValue(state, "Status") !== "awaiting approval") return refuse("tune-apply: state.md does not say awaiting approval. Next: `/groundwork tune`");
   const fp = tuneFingerprint();
@@ -5319,7 +5434,7 @@ function cmdTuneApply() {
   // holds the branch that run chose.
   const markerPath = path.join(ROOT, ...TUNE_MARKER.split("/"));
   let marker = null;
-  try { const m = JSON.parse(read(markerPath)); if (m?.fingerprint === fp) marker = m; } catch { /* no marker, or a broken one */ }
+  try { const m = JSON.parse(readText(markerPath)); if (m?.fingerprint === fp) marker = m; } catch { /* no marker, or a broken one */ }
   let marked = marker !== null;
   if (!marked) {
     // Shipping goes through a pull request from the base branch, so a tune that starts anywhere else could never ship.
@@ -5436,7 +5551,7 @@ function tuneDeliverSteps(fail, out, tmp, setStep) {
 
   // 1. The proposal was applied, and it is still the one the user approved.
   setStep("check");
-  const state = read(path.join(ROOT, ...TUNE_STATE.split("/")));
+  const state = readText(path.join(ROOT, ...TUNE_STATE.split("/")));
   if (state === null || headerValue(state, "Status") !== "applied") return fail("check", "tune-deliver: the proposal is not applied. Next: `/groundwork approve tune`");
   setStep("approval");
   const shownFingerprint = headerValue(state, "Shown");
@@ -5549,9 +5664,124 @@ function tuneDeliverSteps(fail, out, tmp, setStep) {
     `${created ? "Opened" : "Updated"} ${pr} from ${branch}.${unpushedNote(unpushedBase, base)}${note ? `\n${note}` : `\nBack on ${base}.`}`);
 }
 
+// ---------- OpenCode agents ----------
+
+// The generated agents, in this order, and the stage whose model each one uses.
+const OPENCODE_AGENTS = { "gw-explore": "explore", "gw-plan": "plan", "gw-build": "build", "gw-review": "review", "gw-deliver": "deliver", "gw-auditor": "auditor", "gw-intake": "intake", "gw-refine": "refine", "gw-fetch": "intake" };
+const opencodeAgentPath = (name) => `.opencode/agents/${name}.md`;
+
+// A scope entry as an OpenCode path pattern. OpenCode matches the whole path (absolute, \ read as /) and its * crosses /, so a
+// leading * lets a repository path match wherever the repository is.
+const opencodePattern = (p) => `*${p.split("<c>").join(".groundwork/changes/*/").split("<r>").join(".groundwork/refinements/*/").split("<change>").join("*").split("**").join("*")}`;
+
+// The permission rules of a generated agent: deny everything, then allow what its Claude agent may do, and edit only on its scope.
+function opencodePermissions(name, cfg) {
+  const allow = (action, resource = "*") => ({ action, resource, effect: "allow" });
+  const edits = (paths) => paths.map((p) => allow("edit", opencodePattern(p)));
+  const search = [allow("read"), allow("glob"), allow("grep")];
+  const server = isPlainObject(cfg.tracker) && typeof cfg.tracker.mcpServer === "string" && cfg.tracker.mcpServer ? cfg.tracker.mcpServer.replace(/[^A-Za-z0-9_-]/g, "_") : null;
+  const rules = {
+    "gw-explore": () => [...search, allow("graphify_*"), ...edits(STAGE_SCOPE.explore)],
+    "gw-plan": () => [...search, ...edits(STAGE_SCOPE.plan)],
+    "gw-build": () => [...search, allow("edit"), allow("shell")],
+    "gw-review": () => [...search, ...edits(STAGE_SCOPE.review)],
+    "gw-deliver": () => [...search, ...edits(STAGE_SCOPE.deliver)],
+    "gw-auditor": () => [...search, ...edits([AUDIT_RESULT, TUNE_PROPOSAL])],
+    "gw-intake": () => [allow("read"), ...(server ? [allow(`${server}_*`)] : []), ...edits([...STAGE_SCOPE.intake, ...REFINEMENT_SCOPE.intake])],
+    "gw-refine": () => [...search, ...edits(REFINEMENT_SCOPE.refine)],
+    "gw-fetch": () => [allow("webfetch"), ...edits(STAGE_SCOPE.fetch)],
+  };
+  return [{ action: "*", resource: "*", effect: "deny" }, ...rules[name]()];
+}
+
+// A generated agent's model: one provider/model token, so a config value cannot add a line (or a rule) to the frontmatter.
+function opencodeAgentModel(name, cfg) {
+  const stage = OPENCODE_AGENTS[name];
+  const model = opencodeModel(stage, cfg);
+  if (!/^[A-Za-z0-9][\w.@+-]*\/[\w.:@+/#-]+$/.test(model)) throw new Error(`models.opencode.${stage} must be one provider/model, got ${JSON.stringify(model)}`);
+  return model;
+}
+
+// The OpenCode agent file: the Claude agent's description, mode, model and permissions, then its body verbatim. LF, one final newline.
+function opencodeAgentText(name, cfg, agentsDir, model = opencodeAgentModel(name, cfg)) {
+  const src = (read(path.join(agentsDir, `${name}.md`)) || "").replace(/\r\n/g, "\n");
+  const m = src.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!m) throw new Error(`${name}.md in the plugin has no frontmatter`);
+  const description = ((m[1].match(/^description:[ \t]*(.*)$/m) || [])[1] || "").trim();
+  if (!description) throw new Error(`${name}.md in the plugin has no description`);
+  // The description and the model are always quoted (a JSON string is a YAML double-quoted scalar), so a ": " or a final ":" in
+  // either cannot make the frontmatter something OpenCode fails to load.
+  const rules = opencodePermissions(name, cfg).map((r) => `  - action: ${JSON.stringify(r.action)}\n    resource: ${JSON.stringify(r.resource)}\n    effect: ${r.effect}\n`).join("");
+  return `---\ndescription: ${JSON.stringify(description)}\nmode: subagent\nmodel: ${JSON.stringify(model)}\npermissions:\n${rules}---\n\n${m[2].replace(/^\n+/, "").replace(/\s*$/, "\n")}`;
+}
+
+// The generated files whose text on disk is not what opencode-agents would write. A Windows checkout with core.autocrlf=true has
+// CRLF files; the line endings are not a difference.
+function opencodeDiffers(files) {
+  return files.filter((f) => { try { return fs.readFileSync(path.join(ROOT, ...f.rel.split("/")), "utf8").replace(/\r\n/g, "\n") !== f.text; } catch { return true; } }).map((f) => f.rel);
+}
+
+function cmdOpencodeAgents() {
+  const agentsDir = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), "agents");
+  const mode = flags.has("--write") ? "--write" : flags.has("--check") ? "--check" : "";
+  const fail = (msg) => { print({ error: msg }, msg); process.exitCode = 1; };
+  if (flags.has("--write") && flags.has("--check")) return fail("opencode-agents takes --write or --check, not both");
+  if (!exists(agentsDir)) return fail(`run it from the Groundwork plugin: node "GW_HOME/scripts/gw.mjs" opencode-agents${mode ? ` ${mode}` : ""}`);
+  const cfg = loadConfig();
+  if (cfg._error) return fail(cfg._error);
+  // Every file is built before any is written, so a stage with no OpenCode model writes nothing.
+  const files = Object.keys(OPENCODE_AGENTS).map((name) => ({ name, rel: opencodeAgentPath(name), text: opencodeAgentText(name, cfg, agentsDir) }));
+  const abs = (rel) => path.join(ROOT, ...rel.split("/"));
+  if (mode === "--check") {
+    const differs = opencodeDiffers(files);
+    print({ ok: differs.length === 0, differs }, differs.length ? `These OpenCode agents differ from what opencode-agents writes:\n${differs.map((d) => `  ${d}`).join("\n")}\nNext: gw.mjs opencode-agents --write` : "The OpenCode agents match the config and the scope lists.");
+    if (differs.length) process.exitCode = 1;
+    return;
+  }
+  if (mode === "--write") {
+    // .opencode and .opencode/agents must be real folders: a link there would send the writes outside the repository.
+    for (const dir of [".opencode", ".opencode/agents"]) {
+      let st = null;
+      try { st = fs.lstatSync(abs(dir)); } catch (e) { if (e.code !== "ENOENT") throw e; }
+      if (st && !st.isDirectory()) return fail(`${dir} is not a folder (a link or a file); not writing the OpenCode agents`);
+      if (!st) fs.mkdirSync(abs(dir));
+    }
+    for (const f of files) writeFileWhole(abs(f.rel), f.text);
+    print({ written: files.map((f) => f.rel) }, `Wrote ${files.length} OpenCode agents:\n${files.map((f) => `  ${f.rel}`).join("\n")}`);
+    return;
+  }
+  print({ files: files.map((f) => f.rel) }, `opencode-agents --write would write:\n${files.map((f) => `  ${f.rel}`).join("\n")}`);
+}
+
+// tokens --opencode <sessionID>: the sum of every message's tokens in `opencode session export <id>`. Only the messages are
+// summed, so a session-level total in the export is never counted twice.
+function cmdTokens() {
+  const id = opt("opencode");
+  if (!id || !/^ses_[A-Za-z0-9]+$/.test(id)) { print({ error: "usage" }, "Usage: tokens --opencode <sessionID> [--json]  (a session ID is ses_ followed by letters and digits)"); process.exitCode = 2; return; }
+  const na = (reason) => { print({ tokens: "n/a", reason }, `n/a (${reason})`); process.exitCode = 1; };
+  const r = hostRun("opencode", ["session", "export", id], {}, 60000);
+  if (r.code !== 0) return na(`opencode session export failed: ${(r.stderr || r.stdout).trim().split(/\r?\n/)[0] || `exit ${r.code}`}`);
+  let data = null;
+  // The CLI may print a notice line before the JSON; parse from the first brace.
+  const text = r.stdout.slice(Math.max(0, r.stdout.indexOf("{")));
+  try { data = JSON.parse(text); } catch { return na("the session export is not valid JSON"); }
+  const messages = isPlainObject(data) && Array.isArray(data.messages) ? data.messages : null;
+  if (!messages) return na("the session export has no messages");
+  const n = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+  let total = 0, found = 0;
+  for (const m of messages) {
+    const t = isPlainObject(m) ? (isPlainObject(m.info) && isPlainObject(m.info.tokens) ? m.info.tokens : isPlainObject(m.tokens) ? m.tokens : null) : null;
+    if (!t) continue;
+    found++;
+    total += n(t.input) + n(t.output) + n(t.reasoning) + (isPlainObject(t.cache) ? n(t.cache.read) + n(t.cache.write) : 0);
+  }
+  if (!found) return na("the session export has no token data");
+  print({ tokens: total }, total.toLocaleString("en-US"));
+}
+
 // ---------- dispatch ----------
 
-const commands = { help: cmdHelp, version: cmdVersion, doctor: cmdDoctor, status: cmdStatus, list: cmdList, refinement: cmdRefinement, ready: cmdReady, answers: cmdAnswers, "refine-comment": cmdRefineComment, "new-questions": cmdNewQuestions, cost: cmdCost, stats: cmdStats, verify: cmdVerify, context: cmdContext, config: cmdConfig, classify: cmdClassify, diff: cmdDiff, fingerprint: cmdFingerprint, snapshot: cmdSnapshot, "check-scope": cmdCheckScope, summary: cmdSummary, "check-refined": cmdCheckRefined, "check-context": cmdCheckContext, "check-plan": cmdCheckPlan, "check-explore": cmdCheckExplore, "check-gate": cmdCheckGate, "check-build": cmdCheckBuild, groups: cmdGroups, "run-tests": cmdRunTests, "review-input": cmdReviewInput, "check-review": cmdCheckReview, "deliver-input": cmdDeliverInput, "check-deliver": cmdCheckDeliver, deliver: cmdDeliver, "check-tune": cmdCheckTune, "tune-apply": cmdTuneApply, "tune-deliver": cmdTuneDeliver, "pr-status": cmdPrStatus, feedback: cmdFeedback, cleanup: cmdCleanup, worktree: cmdWorktree, task: cmdTask, history: cmdHistory, refs: cmdRefs };
+const commands = { help: cmdHelp, version: cmdVersion, doctor: cmdDoctor, status: cmdStatus, list: cmdList, refinement: cmdRefinement, ready: cmdReady, answers: cmdAnswers, "refine-comment": cmdRefineComment, "new-questions": cmdNewQuestions, cost: cmdCost, stats: cmdStats, verify: cmdVerify, context: cmdContext, config: cmdConfig, classify: cmdClassify, diff: cmdDiff, fingerprint: cmdFingerprint, snapshot: cmdSnapshot, "check-scope": cmdCheckScope, summary: cmdSummary, "check-refined": cmdCheckRefined, "check-context": cmdCheckContext, "check-plan": cmdCheckPlan, "check-explore": cmdCheckExplore, "check-gate": cmdCheckGate, "check-build": cmdCheckBuild, groups: cmdGroups, "run-tests": cmdRunTests, "review-input": cmdReviewInput, "check-review": cmdCheckReview, "deliver-input": cmdDeliverInput, "check-deliver": cmdCheckDeliver, deliver: cmdDeliver, "check-tune": cmdCheckTune, "tune-apply": cmdTuneApply, "tune-deliver": cmdTuneDeliver, "pr-status": cmdPrStatus, feedback: cmdFeedback, cleanup: cmdCleanup, worktree: cmdWorktree, task: cmdTask, history: cmdHistory, refs: cmdRefs, "opencode-agents": cmdOpencodeAgents, tokens: cmdTokens };
 if (commands[command]) {
   try { await commands[command](); } catch (e) { print({ error: e.message }, e.message); process.exitCode = 1; }
 } else {

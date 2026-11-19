@@ -10,7 +10,8 @@
     "review": "opus",
     "securityReview": "opus",
     "deliver": "haiku",
-    "auditor": "sonnet"
+    "auditor": "sonnet",
+    "opencode": {}
   },
   "tracker": {
     "type": "jira",

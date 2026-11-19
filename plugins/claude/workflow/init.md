@@ -12,7 +12,7 @@ Run `node "GW_HOME/scripts/gw.mjs" doctor --json` and read the result. Note:
 
 ## 2. Show the plan and ask once
 
-List only the steps below that are still needed, then ask the user to confirm with one question. Also ask which harnesses OpenSpec should set up: Claude Code only (default), or Claude Code and GitHub Copilot.
+List only the steps below that are still needed, then ask the user to confirm with one question. Also ask which harnesses OpenSpec should set up: Claude only (default), or Claude and GitHub Copilot.
 
 1. **OpenSpec CLI**: if missing, install with `npm install -g @fission-ai/openspec@1.16.0`.
 2. **OpenSpec in the repo**: if `openspec/` is missing, run `openspec init --tools claude` (or `--tools claude,github-copilot`).

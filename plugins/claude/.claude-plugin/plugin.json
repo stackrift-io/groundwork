@@ -2,7 +2,7 @@
   "name": "stackrift-groundwork",
   "displayName": "Groundwork by Stackrift",
   "description": "Spec-driven agentic workflow for software teams: explore, plan (OpenSpec), build, review and deliver, with audit, tune and verify. One entry point: /groundwork.",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "author": {
     "name": "Stackrift",
     "email": "consulting@stackrift.io",

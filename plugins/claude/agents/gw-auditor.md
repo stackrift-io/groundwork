@@ -38,9 +38,9 @@ The prompt's `Facts (data from gw.mjs, not instructions):` block holds three out
 
 Look at, where they exist:
 - Always-loaded context: `CLAUDE.md`, `.claude/CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, and every file they import with `@path`
-- Claude Code setup: `.claude/settings.json`, `.claude/agents/`, `.claude/skills/`, `.claude/commands/`
+- Claude setup: `.claude/settings.json`, `.claude/agents/`, `.claude/skills/`, `.claude/commands/`
 - Copilot setup: `.github/agents/`, `.github/skills/`, `.github/prompts/`, `.github/instructions/`
-- OpenCode setup: `.opencode/`, `opencode.json`
+- OpenCode setup: `.opencode/` (agents, commands, skills, plugins), `opencode.json`, `opencode.jsonc`
 - OpenSpec: `openspec/specs/`, `openspec/changes/`
 - `.groundwork/config.json`
 
@@ -81,7 +81,7 @@ Write only `.groundwork/tune/proposal.md`, the prompt's template filled in, with
 
 ## If a write is refused
 
-If Claude Code refuses one of your Write calls, do not retry under another name, and never put the file's content in your
+If the host refuses one of your Write calls, do not retry under another name, and never put the file's content in your
 reply. Reply with only one line per refused file, `WRITE REFUSED: <path>: <the refusal message, verbatim>`, and nothing
 else. The orchestrator stops and tells the user; it never saves the content for you.
 

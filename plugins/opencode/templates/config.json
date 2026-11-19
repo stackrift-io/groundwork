@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "models": {
+    "intake": "haiku",
+    "refine": "sonnet",
+    "explore": "haiku",
+    "plan": "opus",
+    "planFast": "sonnet",
+    "build": "sonnet",
+    "review": "opus",
+    "securityReview": "opus",
+    "deliver": "haiku",
+    "auditor": "sonnet",
+    "opencode": {}
+  },
+  "tracker": {
+    "type": "jira",
+    "mcpServer": "atlassian",
+    "keyPattern": "^[A-Z][A-Z0-9]+-[0-9]+$"
+  },
+  "refine": {
+    "required": false,
+    "readyMarker": { "type": "label", "value": "ready" }
+  },
+  "context": {
+    "trustedDomains": []
+  },
+  "codeGraph": { "type": "none" },
+  "commands": {
+    "unit": "",
+    "integration": "",
+    "e2e": "",
+    "lint": "",
+    "timeoutMinutes": 30
+  },
+  "build": {
+    "parallel": false,
+    "maxBuilders": 3,
+    "groupThreshold": 3
+  },
+  "review": {
+    "maxBuildReviewLoops": 2
+  },
+  "deliver": {
+    "openPullRequest": false,
+    "requireApproval": true,
+    "codeHost": "github",
+    "baseBranch": "main"
+  },
+  "contextBudgetTokens": 3000,
+  "contextFiles": ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md"],
+  "pricing": {}
+}

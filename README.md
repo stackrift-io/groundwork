@@ -9,7 +9,7 @@ Every stage runs as a scoped agent that writes only its own handoff file; a
 deterministic script (`gw.mjs`, no dependencies) checks each stage, does every git and
 pull request operation, and runs the same checks in CI.
 
-Groundwork runs in Claude Code today. GitHub Copilot CLI, OpenCode and Codex are planned.
+Groundwork runs in Claude Code and OpenCode. GitHub Copilot CLI and Codex are planned.
 
 ## Install (Claude Code)
 
@@ -23,6 +23,19 @@ Update later with `/plugin marketplace update stackrift`.
 Requirements: Node.js 20.19 or later, Git, and the OpenSpec CLI
 (`npm install -g @fission-ai/openspec@1.16.0`; `/groundwork init` offers to install it).
 For pull requests, `gh` (GitHub) or `az` (Azure Repos), signed in.
+
+## Install (OpenCode)
+
+```
+git clone https://github.com/stackrift-io/groundwork
+sh groundwork/plugins/opencode/install.sh          # macOS / Linux
+powershell -File groundwork\plugins\opencode\install.ps1   # Windows
+```
+
+The installer copies the folder to `~/.config/opencode/groundwork/` and writes only the
+command and one agent into OpenCode's folders. Re-run it to update. `/groundwork init`
+then generates the stage agents in the repository's `.opencode/agents/`. See
+[plugins/opencode/README.md](plugins/opencode/README.md).
 
 ## Start
 
@@ -41,6 +54,7 @@ shows the delivery for a second approval before anything is committed or pushed.
 
 ```
 plugins/claude/     the Claude Code plugin (this marketplace installs it)
+plugins/opencode/   the OpenCode install folder (clone, then run its installer)
 ```
 
 ## License

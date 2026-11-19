@@ -7,6 +7,13 @@ changes, and you approve the delivery before anything is committed or pushed. Af
 the pull request opens, its comments and failed checks come back as review rounds.
 Audit, tune and verify keep the repository's agent setup healthy.
 
+## Install
+
+```
+/plugin marketplace add stackrift-io/groundwork
+/plugin install stackrift-groundwork@stackrift
+```
+
 ## Use it
 
 In a Git repository, run `/groundwork init` once. Then start a change with
